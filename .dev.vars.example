@@ -1,0 +1,22 @@
+# Copy to `.dev.vars` for local `wrangler dev`, and set the same values in production with
+# `wrangler secret put <NAME>`. Do NOT commit `.dev.vars` (it is gitignored).
+
+# Required — Google Gemini API key for the VLM PDF→HTML parse.
+GEMINI_API_KEY=
+
+# Optional — fal.ai key. Enables the WCAG 1.4.3 color-contrast lane (image layerize). Without it, the
+# contrast facet degrades gracefully to flagging contrast for human review instead of measuring it.
+FAL_KEY=
+
+# Required in production — HMAC key for the content-origin frame capability tokens (the chrome→content
+# handoff that lets a private session embed its sandboxed iframe cross-origin). Use a long random value.
+FRAME_SIGN_KEY=
+
+# Optional — shared secret for the live-doc claim bridge (associating an anonymous session with a user).
+LIVE_DOC_CLAIM_SECRET=
+
+# Optional — public origins (otherwise these can live under [vars] in wrangler.toml). Set when you deploy
+# behind your own hostnames so the embedded MCP App resources point at the right place.
+# PUBLIC_ORIGIN=
+# PUBLIC_VIEWER_ORIGIN=
+# CONTENT_ORIGIN=

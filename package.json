@@ -1,0 +1,39 @@
+{
+  "name": "wcag-audit-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Cloudflare Worker that turns any PDF into a live, screen-reader-friendly accessible HTML twin and runs a WCAG 2.2 AA / PDF-UA audit behind a durable human-review gate — built on the Cloudflare Agents SDK + Workflows.",
+  "license": "MIT",
+  "keywords": [
+    "cloudflare-workers",
+    "cloudflare-agents",
+    "workflows",
+    "durable-objects",
+    "accessibility",
+    "a11y",
+    "wcag",
+    "pdf-ua",
+    "pdf",
+    "mcp"
+  ],
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "probe": "node scripts/probe-local.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.12.4",
+    "pdf-lib": "^1.17.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.95.0"
+  }
+}

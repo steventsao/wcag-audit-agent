@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WCAG Audit Agent — user flow</title>
+<style>
+  #wcag-flow{
+    --canvas:#eef2f6; --paper:#ffffff; --head:#17324d; --teal:#0f4f6f; --teal-bright:#37c0e8;
+    --ink:#1f2430; --mut:#5d6675; --line:#e7e3da; --dark:#0f2233; --dark2:#0a1722;
+    --pass:#15803d; --passbg:#dcfce7; --fail:#b42318; --failbg:#fee2e2; --warn:#b45309; --warnbg:#fef3c7;
+    position:relative; width:1920px; height:1080px; overflow:hidden; background:var(--canvas);
+    font-family:'Inter',system-ui,sans-serif; color:var(--ink);
+  }
+  #wcag-flow *{box-sizing:border-box; margin:0; padding:0}
+  .sc{position:absolute; inset:0; opacity:0; display:flex; flex-direction:column;
+      justify-content:center; padding:140px 180px; gap:28px; background:var(--canvas)}
+  .sc.dark{background:var(--dark); color:#dce7ef}
+  /* localized glow (no full-screen gradient) */
+  .glow{position:absolute; border-radius:50%; filter:blur(90px); opacity:.5; z-index:0}
+  .sc-body{position:relative; z-index:1; display:flex; flex-direction:column; gap:28px}
+
+  .kicker{font-weight:800; letter-spacing:.22em; font-size:24px; text-transform:uppercase}
+  .disp{font-family:'Inter',sans-serif; font-weight:800; letter-spacing:-.02em; line-height:1.02}
+  .step-cap{display:flex; align-items:center; gap:16px; font-weight:700; color:var(--teal); font-size:30px}
+  .step-num{display:inline-flex; align-items:center; justify-content:center; width:46px; height:46px;
+            border-radius:50%; background:var(--teal); color:#fff; font-size:24px; font-weight:800}
+
+  .card{background:var(--paper); border:1px solid var(--line); border-radius:18px;
+        box-shadow:0 30px 80px -50px rgba(15,34,51,.55)}
+  .panel-head{display:flex; align-items:center; justify-content:space-between;
+              padding:22px 30px; border-bottom:1px solid var(--line); background:#fafcfd; border-radius:18px 18px 0 0}
+  .panel-title{font-weight:800; color:var(--head); font-size:30px}
+  .panel-code{font-size:22px; color:var(--mut)}
+
+  .row{display:flex; align-items:center; justify-content:space-between; padding:22px 30px; border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row-label{font-size:30px; color:var(--head); font-weight:600}
+  .row-sub{font-size:21px; color:var(--mut); font-weight:500}
+  .pill{display:inline-flex; align-items:center; gap:10px; padding:9px 20px; border-radius:999px;
+        font-weight:800; font-size:23px; white-space:nowrap}
+  .pill.pass{background:var(--passbg); color:var(--pass)}
+  .pill.fail{background:var(--failbg); color:var(--fail)}
+  .pill.warn{background:var(--warnbg); color:var(--warn)}
+  .pill.na{background:#eef2f6; color:var(--mut)}
+
+  .cards-row{display:flex; gap:22px}
+  .stat{flex:1; background:var(--paper); border:1px solid var(--line); border-radius:16px; padding:24px 26px}
+  .stat b{display:block; font-family:'Inter',sans-serif; font-size:64px; color:var(--head); font-variant-numeric:tabular-nums; line-height:1}
+  .stat span{display:block; margin-top:8px; font-size:21px; color:var(--mut); text-transform:uppercase; letter-spacing:.05em; font-weight:700}
+  .stat.is-fail b{color:var(--fail)} .stat.is-warn b{color:var(--warn)} .stat.is-pass b{color:var(--pass)}
+
+  /* scene 2 — dropzone */
+  .dropzone{position:relative; width:760px; height:380px; border:3px dashed #b9c6d2; border-radius:24px;
+            background:#f6f9fc; display:flex; align-items:center; justify-content:center; align-self:center}
+  .filechip{position:absolute; top:120px; display:flex; align-items:center; gap:18px; background:var(--paper);
+            border:1px solid var(--line); border-radius:16px; padding:22px 30px; box-shadow:0 24px 60px -36px rgba(15,34,51,.6)}
+  .fileglyph{width:64px; height:80px; border-radius:8px; background:linear-gradient(180deg,#e7eef4,#d4e0ea);
+             border:1px solid #c4d3df; position:relative}
+  .fileglyph::after{content:"PDF"; position:absolute; left:0; right:0; bottom:12px; text-align:center;
+             font-size:18px; font-weight:800; color:var(--fail)}
+  .filename{font-size:30px; font-weight:700; color:var(--head)}
+  .filemeta{font-size:21px; color:var(--mut)}
+
+  /* scene 5 — gate */
+  .gate-wrap{display:flex; flex-direction:column; gap:34px; align-self:center; align-items:center; text-align:center}
+  .gate-line{display:flex; align-items:center; gap:18px; font-size:32px; color:var(--head); font-weight:600}
+  .btn-attest{display:inline-flex; align-items:center; gap:14px; background:var(--passbg); color:var(--pass);
+              border:2px solid #a7dcbf; border-radius:14px; padding:22px 40px; font-weight:800; font-size:34px}
+  .stamp{position:absolute; right:300px; top:360px; transform:rotate(-8deg); border:6px solid var(--pass);
+         color:var(--pass); border-radius:18px; padding:18px 40px; font-family:'Inter',sans-serif;
+         font-weight:800; font-size:84px; letter-spacing:.04em; opacity:0; background:rgba(220,252,231,.55)}
+
+  /* scene 6 — flow line */
+  .flowline{display:flex; align-items:center; gap:26px; flex-wrap:wrap; font-family:'Inter',sans-serif;
+            font-weight:800; font-size:78px; color:#dce7ef; letter-spacing:-.01em}
+  .flow-arrow{color:var(--teal-bright); font-size:60px}
+  .flow-final{color:#5fe39b}
+  .repo{font-size:30px; color:#7d96a8; font-weight:600}
+
+  .fadeout{position:absolute; inset:0; background:#05080c; opacity:0; z-index:100}
+</style>
+</head>
+<body>
+<div id="wcag-flow" data-composition-id="wcag-flow" data-width="1920" data-height="1080" data-start="0" data-duration="20" data-track-index="0">
+
+  <!-- Scene 1 — title -->
+  <section class="sc dark" id="s1" style="z-index:1; justify-content:center">
+    <div class="glow" style="width:760px;height:760px;background:#0f4f6f;left:-160px;top:-200px"></div>
+    <div class="glow" style="width:620px;height:620px;background:#37c0e8;right:-120px;bottom:-180px;opacity:.28"></div>
+    <div class="sc-body">
+      <div class="kicker" id="s1-kick" style="color:var(--teal-bright)">Cloudflare Agents + Workflows</div>
+      <h1 class="disp" id="s1-h1" style="font-size:142px;color:#fff">WCAG Audit Agent</h1>
+      <p id="s1-sub" style="font-size:42px;color:#cfe0ec;max-width:1200px;font-weight:500">Turn any PDF into an audited, screen-reader-friendly <b style="color:#fff">accessible HTML twin</b>.</p>
+    </div>
+  </section>
+
+  <!-- Scene 2 — drop a PDF -->
+  <section class="sc" id="s2" style="z-index:2">
+    <div class="sc-body" style="gap:48px">
+      <div class="step-cap" id="s2-cap"><span class="step-num">1</span> Drop a PDF</div>
+      <div class="dropzone" id="s2-zone">
+        <div class="filechip" id="s2-chip">
+          <div class="fileglyph"></div>
+          <div>
+            <div class="filename">annual-report.pdf</div>
+            <div class="filemeta">or paste a public URL →</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Scene 3 — deterministic byte audit -->
+  <section class="sc" id="s3" style="z-index:3">
+    <div class="sc-body" style="gap:36px">
+      <div class="step-cap" id="s3-cap"><span class="step-num">2</span> Deterministic byte audit <span class="row-sub" style="color:var(--mut)">· pdf-lib</span></div>
+      <div class="card" id="s3-card" style="max-width:1180px">
+        <div class="panel-head"><span class="panel-title">Structure — byte-level</span><span class="panel-code">the criteria vision can't see</span></div>
+        <div class="row s3r"><span class="row-label">Tagged PDF</span><span class="pill pass">✓ pass</span></div>
+        <div class="row s3r"><span class="row-label">Language <span class="row-sub">/Lang</span></span><span class="pill pass">✓ pass</span></div>
+        <div class="row s3r"><span class="row-label">Document title <span class="row-sub">DisplayDocTitle</span></span><span class="pill pass">✓ pass</span></div>
+        <div class="row s3r"><span class="row-label">Figure alt text <span class="row-sub">/Figure /Alt</span></span><span class="pill fail">✕ fail</span></div>
+        <div class="row s3r"><span class="row-label">Table headers <span class="row-sub">/Table /TH</span></span><span class="pill pass">✓ pass</span></div>
+        <div class="row s3r"><span class="row-label">StructTree roles</span><span class="pill pass">✓ pass</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Scene 4 — WCAG 2.2 AA rollup -->
+  <section class="sc" id="s4" style="z-index:4">
+    <div class="sc-body" style="gap:34px">
+      <div class="step-cap" id="s4-cap"><span class="step-num">3</span> WCAG 2.2 AA rollup</div>
+      <div class="cards-row" id="s4-stats">
+        <div class="stat"><b data-count="55">0</b><span>Criteria</span></div>
+        <div class="stat is-pass"><b data-count="41">0</b><span>Pass</span></div>
+        <div class="stat is-fail"><b data-count="3">0</b><span>Fail</span></div>
+        <div class="stat is-warn"><b data-count="7">0</b><span>Needs human</span></div>
+        <div class="stat"><b data-count="4">0</b><span>N/A</span></div>
+      </div>
+      <div class="card" id="s4-card" style="max-width:1300px">
+        <div class="row s4r"><span class="row-label">Text alternatives <span class="row-sub">1.1</span></span><span class="pill fail">✕ fail</span></div>
+        <div class="row s4r"><span class="row-label">Adaptable <span class="row-sub">1.3</span></span><span class="pill pass">✓ pass</span></div>
+        <div class="row s4r"><span class="row-label">Distinguishable <span class="row-sub">1.4</span></span><span class="pill warn">needs human</span></div>
+        <div class="row s4r"><span class="row-label">Navigable <span class="row-sub">2.4</span></span><span class="pill pass">✓ pass</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Scene 5 — human review gate -->
+  <section class="sc" id="s5" style="z-index:5">
+    <div class="glow" style="width:640px;height:640px;background:#15803d;right:120px;top:120px;opacity:.12"></div>
+    <div class="sc-body" style="align-items:center">
+      <div class="step-cap" id="s5-cap" style="align-self:flex-start"><span class="step-num">4</span> Human review gate</div>
+      <div class="gate-wrap">
+        <div class="gate-line" id="s5-gate">Gate <span class="pill warn" id="s5-pill">pending review</span></div>
+        <div class="btn-attest" id="s5-btn">✓ Approve · attest</div>
+        <p class="row-sub" id="s5-note" style="font-size:26px;max-width:840px">A machine PASS is a pre-assessment. Attestation flips only when a human signs off.</p>
+      </div>
+    </div>
+    <div class="stamp" id="s5-stamp">ATTESTED</div>
+  </section>
+
+  <!-- Scene 6 — outro -->
+  <section class="sc dark" id="s6" style="z-index:6; justify-content:center">
+    <div class="glow" style="width:720px;height:720px;background:#0f4f6f;left:-140px;bottom:-220px;opacity:.4"></div>
+    <div class="sc-body" style="gap:40px">
+      <div class="flowline">
+        <span id="s6-w1">Audited</span><span class="flow-arrow" id="s6-a1">→</span>
+        <span id="s6-w2">Remediated</span><span class="flow-arrow" id="s6-a2">→</span>
+        <span class="flow-final" id="s6-w3">Attested</span>
+      </div>
+      <div class="repo" id="s6-repo">wcag-audit-agent · Cloudflare Agents + Workflows · MIT</div>
+    </div>
+  </section>
+
+  <div class="fadeout" id="fadeout"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+
+    // hide every scene at load; each fades in at its start (the crossfade IS the transition — no exits)
+    tl.set(['#s2','#s3','#s4','#s5','#s6'], { opacity: 0 }, 0);
+
+    // ── Scene 1 (0.0–2.6) ────────────────────────────────
+    tl.to('#s1', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 0.1);
+    tl.from('#s1-kick', { y: 24, opacity: 0, duration: 0.5, ease: 'power2.out' }, 0.3);
+    tl.from('#s1-h1',   { y: 60, opacity: 0, duration: 0.7, ease: 'expo.out' }, 0.5);
+    tl.from('#s1-sub',  { y: 34, opacity: 0, duration: 0.6, ease: 'power3.out' }, 0.9);
+
+    // ── Scene 2 (2.6–5.4) — drop a PDF ───────────────────
+    tl.to('#s2', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 2.6);
+    tl.from('#s2-cap',  { x: -36, opacity: 0, duration: 0.5, ease: 'expo.out' }, 2.75);
+    tl.from('#s2-zone', { scale: 0.9, opacity: 0, duration: 0.55, ease: 'power3.out' }, 2.95);
+    tl.from('#s2-chip', { y: -260, opacity: 0, duration: 0.7, ease: 'back.out(1.5)' }, 3.3);
+
+    // ── Scene 3 (5.4–9.6) — byte audit ───────────────────
+    tl.to('#s3', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 5.4);
+    tl.from('#s3-cap',  { x: -36, opacity: 0, duration: 0.5, ease: 'expo.out' }, 5.55);
+    tl.from('#s3-card', { y: 40, opacity: 0, duration: 0.5, ease: 'power3.out' }, 5.8);
+    tl.from('.s3r', { x: 40, opacity: 0, duration: 0.45, ease: 'power2.out', stagger: 0.14 }, 6.1);
+    // pop the failing row's badge so the eye lands on it
+    tl.fromTo('#s3-card .row:nth-child(5) .pill', { scale: 0.7 }, { scale: 1, duration: 0.4, ease: 'back.out(2.2)' }, 7.0);
+
+    // ── Scene 4 (9.6–13.6) — WCAG rollup ─────────────────
+    tl.to('#s4', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 9.6);
+    tl.from('#s4-cap', { x: -36, opacity: 0, duration: 0.5, ease: 'expo.out' }, 9.75);
+    tl.from('.stat', { y: 36, opacity: 0, duration: 0.5, ease: 'power3.out', stagger: 0.1 }, 10.0);
+    // deterministic count-up driven by the timeline
+    document.querySelectorAll('#s4-stats .stat b').forEach((el) => {
+      const target = Number(el.getAttribute('data-count'));
+      const obj = { v: 0 };
+      tl.to(obj, { v: target, duration: 1.0, ease: 'power1.out',
+        onUpdate: () => { el.textContent = String(Math.round(obj.v)); } }, 10.3);
+    });
+    tl.from('.s4r', { x: 36, opacity: 0, duration: 0.45, ease: 'power2.out', stagger: 0.12 }, 10.7);
+
+    // ── Scene 5 (13.6–17.6) — human gate ─────────────────
+    tl.to('#s5', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 13.6);
+    tl.from('#s5-cap',  { x: -36, opacity: 0, duration: 0.5, ease: 'expo.out' }, 13.75);
+    tl.from('#s5-gate', { y: 30, opacity: 0, duration: 0.5, ease: 'power2.out' }, 14.0);
+    tl.from('#s5-btn',  { y: 30, opacity: 0, duration: 0.5, ease: 'back.out(1.4)' }, 14.3);
+    tl.from('#s5-note', { opacity: 0, duration: 0.5, ease: 'power1.out' }, 14.6);
+    // the click on Approve
+    tl.to('#s5-btn', { scale: 0.94, duration: 0.12, ease: 'power2.in' }, 15.5);
+    tl.to('#s5-btn', { scale: 1, duration: 0.18, ease: 'power2.out' }, 15.62);
+    // gate resolves: pill flips pending → finalized, stamp slams in
+    tl.add(() => {
+      const p = document.getElementById('s5-pill');
+      if (p) { p.textContent = 'finalized'; p.className = 'pill pass'; }
+    }, 15.8);
+    tl.fromTo('#s5-pill', { scale: 0.7 }, { scale: 1, duration: 0.35, ease: 'back.out(2.4)' }, 15.8);
+    tl.fromTo('#s5-stamp', { opacity: 0, scale: 1.7, rotation: -22 },
+      { opacity: 1, scale: 1, rotation: -8, duration: 0.5, ease: 'power4.out' }, 15.95);
+
+    // ── Scene 6 (17.6–20.0) — outro ──────────────────────
+    tl.to('#s6', { opacity: 1, duration: 0.5, ease: 'power1.out' }, 17.6);
+    tl.from('#s6-w1', { y: 40, opacity: 0, duration: 0.5, ease: 'expo.out' }, 17.9);
+    tl.from('#s6-a1', { opacity: 0, duration: 0.3, ease: 'power1.out' }, 18.15);
+    tl.from('#s6-w2', { y: 40, opacity: 0, duration: 0.5, ease: 'expo.out' }, 18.3);
+    tl.from('#s6-a2', { opacity: 0, duration: 0.3, ease: 'power1.out' }, 18.55);
+    tl.from('#s6-w3', { y: 40, opacity: 0, scale: 0.9, duration: 0.55, ease: 'back.out(1.6)' }, 18.7);
+    tl.from('#s6-repo', { y: 24, opacity: 0, duration: 0.5, ease: 'power2.out' }, 19.0);
+    // final scene only: fade to black
+    tl.to('#fadeout', { opacity: 1, duration: 0.55, ease: 'power1.in' }, 19.45);
+
+    window.__timelines['wcag-flow'] = tl;
+  </script>
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.log
+.DS_Store
+coverage/
+.idea/
+.vscode/
+
+# hyperframes build output (the curated demo GIF is committed; the mp4/frames are regenerable)
+hyperframes/renders/
+hyperframes/.hyperframes/
+hyperframes/capture/

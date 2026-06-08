@@ -1,0 +1,139 @@
+name = "wcag-audit-agent"
+main = "src/index.ts"
+# nodejs_compat is required (pdf-lib + node built-ins). The compat date is set past the point where
+# the Agents SDK's facets / sub-agents are enabled by default (no experimental flag needed).
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Optional: serve the public viewer + sandboxed content iframe from your own hostnames. The content
+# origin is deliberately a SEPARATE host so untrusted VLM-rendered HTML is sandboxed away from the main
+# app's DOM/cookies (it must stay same-site so the per-session frame cookie keeps working). If you set
+# these, also set PUBLIC_ORIGIN / PUBLIC_VIEWER_ORIGIN / CONTENT_ORIGIN under [vars] below.
+# routes = [
+#   { pattern = "live.example.com/*", zone_name = "example.com" },
+#   { pattern = "content.example.com/*", zone_name = "example.com" },
+# ]
+
+# Public origins embedded into the MCP App resources (CSP + returned viewer URL). Defaults fall back to a
+# placeholder; set these to your deployed origins. CONTENT_ORIGIN is the isolated iframe host.
+# [vars]
+# PUBLIC_ORIGIN = "https://wcag-audit-agent.<your-subdomain>.workers.dev"
+# PUBLIC_VIEWER_ORIGIN = "https://live.example.com"
+# CONTENT_ORIGIN = "https://content.example.com"
+
+# Secrets (set with `wrangler secret put <NAME>`): GEMINI_API_KEY (required, the VLM parse),
+# FAL_KEY (optional, the WCAG 1.4.3 contrast layerize lane), FRAME_SIGN_KEY (required in prod, the
+# private-session chrome→content frame-capability HMAC), LIVE_DOC_CLAIM_SECRET (optional claim bridge).
+
+[observability]
+enabled = true
+
+[[durable_objects.bindings]]
+name = "A11Y_AGENT"
+class_name = "A11yAgent"
+
+# LiveDocAgent: per-session DO owning the durable SSE event log + HTML snapshot for the live streamed
+# accessible document surface. Plain DurableObject (SSE transport). One instance per sessionId.
+[[durable_objects.bindings]]
+name = "LIVE_DOC_AGENT"
+class_name = "LiveDocAgent"
+
+# ValidatorAgent (lightweight brain) + ValidatorWorkflow (durable heavy offload).
+[[durable_objects.bindings]]
+name = "VALIDATOR_AGENT"
+class_name = "ValidatorAgent"
+
+[[workflows]]
+name = "wcag-audit-validator"
+binding = "VALIDATOR_WORKFLOW"
+class_name = "ValidatorWorkflow"
+
+# ColorContrastAgent (WCAG 1.4.3) + ContrastWorkflow. The binding name MUST kebab-match the class name
+# (COLOR_CONTRAST_AGENT → ColorContrastAgent) so the Agents SDK can auto-derive the agent binding for
+# getAgentByName() / runWorkflow(); a non-matching name throws "Could not detect Agent binding name".
+[[durable_objects.bindings]]
+name = "COLOR_CONTRAST_AGENT"
+class_name = "ColorContrastAgent"
+
+# WcagAgent: the WCAG 2.2 AA rollup specialist. Maps the gathered criteria onto the rule-area template;
+# re-measures nothing, so it has no workflow lane (the coordinator calls it synchronously). The binding
+# name must kebab-match the class (WCAG_AGENT → WcagAgent) for subAgent()/getAgentByName().
+[[durable_objects.bindings]]
+name = "WCAG_AGENT"
+class_name = "WcagAgent"
+
+[[workflows]]
+name = "wcag-audit-contrast"
+binding = "CONTRAST_WORKFLOW"
+class_name = "ContrastWorkflow"
+
+# One coordinator-owned shared workflow that drives any domain through routine → agent → done. Owned by
+# A11yAgent and bridges into facets via the top-level agent, so no new DO class / migration is needed.
+[[workflows]]
+name = "wcag-audit-specialist"
+binding = "SPECIALIST_WORKFLOW"
+class_name = "SpecialistWorkflow"
+
+# The PDF-remediation domain pipeline: Audit → Find-Source → Remediate → Compare → attestation gate,
+# calling the coordinator step methods. Owned by A11yAgent — a [[workflows]] binding only, no new DO.
+[[workflows]]
+name = "wcag-audit-remediation"
+binding = "REMEDIATION_WORKFLOW"
+class_name = "RemediationWorkflow"
+
+# FigureImageWorkflow: the figure-image lane for the live doc surface. Runs separately from the text
+# stream and posts each cropped <img> back to LiveDocAgent as a generic SSE `replace`. It reads the
+# stashed PDF from LIVE_PDF_BUCKET and renders the real bbox crop via this worker's own rasterizer.
+[[workflows]]
+name = "wcag-audit-figure-image"
+binding = "FIGURE_IMAGE_WORKFLOW"
+class_name = "FigureImageWorkflow"
+
+# PdfRasterizer: this worker's own MuPDF container, so the figure-image lane renders real bbox crops.
+# The Go /render handler accepts an optional `crop` param. Built locally on deploy (needs Docker).
+[[durable_objects.bindings]]
+name = "PDF_RASTERIZER"
+class_name = "PdfRasterizer"
+
+[[containers]]
+class_name = "PdfRasterizer"
+image = "./containers/pdf-rasterizer/Dockerfile"
+max_instances = 3
+instance_type = "basic"
+
+# Session PDFs stashed here so the figure-image workflow can render crops; deleted when the workflow ends.
+[[r2_buckets]]
+binding = "LIVE_PDF_BUCKET"
+bucket_name = "wcag-audit-live"
+
+# Per-IP rate limit on the unauthenticated session-create path (each call triggers a VLM parse + render).
+# 15 / 60s per Cloudflare location per IP. period must be 10 or 60.
+[[ratelimits]]
+name = "SESSIONS_RATELIMIT"
+namespace_id = "9021"
+simple = { limit = 15, period = 60 }
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["A11yAgent"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ValidatorAgent"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["ColorContrastAgent"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["WcagAgent"]
+
+[[migrations]]
+tag = "v5"
+new_sqlite_classes = ["LiveDocAgent"]
+
+[[migrations]]
+tag = "v6"
+new_sqlite_classes = ["PdfRasterizer"]
