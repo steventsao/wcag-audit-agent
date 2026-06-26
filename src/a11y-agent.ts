@@ -19,6 +19,7 @@ import {
   type ComparisonResult,
 } from './pipeline';
 import type { RemediationParams } from './workflows/remediation-workflow';
+import { geminiComplete } from './gemini-parse';
 
 /**
  * Env for A11yAgent (the coordinator). It is the worker env: the A11Y_AGENT DO
@@ -34,6 +35,8 @@ export interface Env extends ValidatorEnv, ContrastEnv, WcagEnv {
   SPECIALIST_WORKFLOW: Workflow;
   REMEDIATION_WORKFLOW: Workflow;
   OPENROUTER_API_KEY?: string;
+  /** Worker secret (set via `wrangler secret put GEMINI_API_KEY`). Backs the conversational chat() reply. */
+  GEMINI_API_KEY?: string;
 }
 
 /**
@@ -118,6 +121,13 @@ export interface ReportRow {
  * `rows` (specialist checklist) stays for the inline 2-domain /v2/audit-a11y-wf path — the WCAG audit
  * findings live under `pipeline.audit.criteria`. Designed to move under A11yReportAgent later.
  */
+/** One turn in the agent's conversational sidebar (the live "ask the agent" surface). */
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  text: string;
+  at: number;
+}
+
 export interface A11yReportState {
   docId?: string;
   pdfUrl?: string;
@@ -170,6 +180,13 @@ export interface A11yReportState {
    * dispatch itself throws (runRemediation try/catch).
    */
   pipelineArming?: boolean;
+  /**
+   * Conversational surface — the user can ask the agent about this audit's progress/results and it replies
+   * over the same live setState broadcast. `thinking` is TRUE while a reply is being composed (the UI shows a
+   * thinking indicator). Optional, so existing reports stay backward-compatible (no migration needed).
+   */
+  chat?: ChatTurn[];
+  thinking?: boolean;
 }
 
 const REVIEW_SLA_SECONDS = 7 * 24 * 60 * 60; // 7 days — durable, survives restarts
@@ -1422,6 +1439,59 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
     // Drop everything except the genuinely-still-parked workflows.
     this.setState({ ...this.state, gatedWorkflows: stillParked, updatedAt: Date.now() });
     return stillParked;
+  }
+
+  /**
+   * Conversational surface: the user asks the agent about THIS document's audit and it replies, grounded in
+   * live state. Every step goes through setState (persist + broadcast) so connected UIs see the user turn,
+   * then a "thinking" indicator, then the reply — the live cloudflare/agents loop. Called from POST /v2/chat.
+   */
+  async chat(text: string): Promise<A11yReportState> {
+    const msg = String(text || '').trim().slice(0, 2000);
+    if (!msg) return this.state;
+    const now = Date.now();
+    const withUser: ChatTurn[] = [...(this.state.chat ?? []), { role: 'user', text: msg, at: now }];
+    this.setState({ ...this.state, chat: withUser, thinking: true, updatedAt: now });
+    let reply: string;
+    try {
+      reply = await this.composeChatReply(msg);
+    } catch (e) {
+      reply = 'Sorry — I could not compose a reply: ' + (e instanceof Error ? e.message : String(e));
+    }
+    this.setState({
+      ...this.state,
+      chat: [...withUser, { role: 'assistant', text: reply, at: Date.now() }],
+      thinking: false,
+      updatedAt: Date.now(),
+    });
+    return this.state;
+  }
+
+  /** Build a grounded prompt from the live ledger and complete it with Gemini. */
+  private async composeChatReply(question: string): Promise<string> {
+    const key = this.env.GEMINI_API_KEY;
+    if (!key) return 'The chat model is not configured (no GEMINI_API_KEY set on this deployment).';
+    const s = this.state;
+    const w = s.wcag?.summary;
+    const steps = (s.steps ?? []).map((st) => st.step + ':' + st.status).join(', ') || 'none yet';
+    const recent = (s.events ?? []).slice(-6).map((e) => e.event).join(', ') || 'none';
+    const ctx = [
+      'docId: ' + (s.docId ?? 'none'),
+      'pdfUrl: ' + (s.pdfUrl ?? 'none'),
+      'report gate: ' + (s.gate ?? 'open'),
+      'pipeline steps: ' + steps,
+      w
+        ? 'WCAG 2.2 AA rollup — total ' + w.total + ', pass ' + w.passed + ', fail ' + w.failed + ', needs-human ' + w.needsHuman + ', n/a ' + w.notApplicable
+        : 'WCAG rollup: not run yet',
+      'checklist rows logged: ' + (s.rows ?? []).length,
+      'recent events: ' + recent,
+    ].join('\n');
+    const prompt =
+      'You are the WCAG accessibility audit agent for ONE PDF document. A user is asking about this audit. ' +
+      'Answer in 2-4 sentences, concrete and grounded ONLY in the state below. If something has not run yet, ' +
+      'say so plainly and suggest the next action (e.g. run the audit). Do not invent verdicts.\n\n' +
+      'CURRENT AUDIT STATE:\n' + ctx + '\n\nUSER QUESTION: ' + question + '\n\nREPLY:';
+    return geminiComplete(key, prompt);
   }
 
   async getReport(): Promise<A11yReportState> {

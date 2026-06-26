@@ -489,6 +489,21 @@ export default {
       }
     }
 
+    // Conversational surface: ask the A11yAgent about this document's audit. The agent appends the user turn,
+    // sets `thinking`, composes a grounded Gemini reply, and appends it — every step a setState broadcast, so
+    // the live UI (WebSocket subscribe + poll fallback) shows message → thinking → reply. LAB-ONLY/unauth.
+    if (path === '/v2/chat' && req.method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as { id?: string; text?: string };
+      const id = String(body.id ?? '').trim();
+      const text = String(body.text ?? '').trim();
+      if (!id || !text) return json({ error: 'id and text required' }, 400);
+      try {
+        return json({ docId: id, report: await stub(env, id).chat(text) });
+      } catch (e) {
+        return json({ error: String(e) }, 500);
+      }
+    }
+
     if (path === '/v2/audit-decide' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as any;
       if (!body.id) return json({ error: 'id required' }, 400);

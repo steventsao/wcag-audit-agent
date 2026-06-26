@@ -84,6 +84,17 @@ export const UI_HTML = `<!doctype html>
   .stream h4{margin:0 0 9px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#7d96a8}
   .ev{font-size:12px;border-left:2px solid #2a4259;padding:2px 0 2px 10px;margin:0 0 6px} .ev b{color:#dce7ef;font-weight:600} .ev .d{color:#8ba6bb;display:block;font-size:11px}
   .ev.human b{color:#ffe1a3} .ev.done b{color:#bff0d4}
+  /* ── ask-the-agent chat ── */
+  .chat{margin:0 0 30px;background:#0f2233;border-radius:12px;padding:13px 16px;color:#cfe0ec}
+  .chat h4{margin:0 0 9px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#7d96a8;display:flex;align-items:center;gap:8px}
+  .thinking{color:#ffe1a3;text-transform:none;letter-spacing:0;font-weight:600}
+  #chatlog{display:flex;flex-direction:column;gap:7px;max-height:240px;overflow:auto;margin-bottom:10px}
+  .msg{font-size:13px;line-height:1.5;padding:7px 11px;border-radius:10px;max-width:88%;white-space:pre-wrap}
+  .msg.user{align-self:flex-end;background:#1d4a63;color:#eaf4fa}
+  .msg.assistant{align-self:flex-start;background:#10202c;border:1px solid #244157;color:#cfe0ec}
+  .chatbar{display:flex;gap:8px}
+  .chatbar input{flex:1;background:#0a1722;border:1px solid #244157;color:#dce7ef;padding:8px 11px;border-radius:8px;font:inherit}
+  .chatbar button{background:#37c0e8;border:0;color:#04222e;font-weight:700;padding:8px 15px;border-radius:8px;cursor:pointer}
 </style></head>
 <body>
   <header class="app-header">
@@ -115,6 +126,14 @@ export const UI_HTML = `<!doctype html>
     <section class="view-shell">
       <div id="view"><div class="coverage-panel"><div class="empty">Enter a docId or hit Audit to load a live WCAG report.</div></div></div>
       <div class="stream"><h4>Event stream</h4><div id="events"><span style="color:#7d96a8">—</span></div></div>
+      <div class="chat">
+        <h4>Ask the agent <span id="thinking" class="thinking" style="display:none">▍ thinking…</span></h4>
+        <div id="chatlog"><span style="color:#7d96a8">Ask about this audit — progress, failures, next steps. The agent replies live over the same socket.</span></div>
+        <div class="chatbar">
+          <input id="chatin" placeholder="e.g. how is the audit going? which criteria failed?"/>
+          <button id="chatsend">Send</button>
+        </div>
+      </div>
     </section>
   </div>
 <script>
@@ -295,6 +314,20 @@ export const UI_HTML = `<!doctype html>
     }).join("") : "<span style=\\"color:#7d96a8\\">no events yet</span>";
   }
 
+  function renderChat(r){
+    var log = document.getElementById("chatlog");
+    var turns = (r && r.chat) ? r.chat : [];
+    if(!turns.length){
+      log.innerHTML = "<span style=\\"color:#7d96a8\\">Ask about this audit — progress, failures, next steps. The agent replies live over the same socket.</span>";
+    } else {
+      log.innerHTML = turns.map(function(t){
+        return "<div class=\\"msg "+(t.role==="user"?"user":"assistant")+"\\">"+esc(t.text)+"</div>";
+      }).join("");
+    }
+    document.getElementById("thinking").style.display = (r && r.thinking) ? "inline" : "none";
+    log.scrollTop = log.scrollHeight;
+  }
+
   function render(d){
     var r = reportOf(d); if(!r) return; lastReport = r;
     var gate = r.gate || "open";
@@ -313,6 +346,7 @@ export const UI_HTML = `<!doctype html>
       tr.onclick = function(){ activeArea = tr.getAttribute("data-area"); render(lastReport); };
     });
     renderEvents(r);
+    renderChat(r);
   }
 
   function decide(dec){
@@ -327,7 +361,33 @@ export const UI_HTML = `<!doctype html>
   }
   var pt = null;
   function startPolling(){ if(pt) return; poll(); pt = setInterval(poll, 1800); }
-  function connectLive(d){ if(!d) return; startPolling(); }
+  // Live push over the cloudflare/agents WebSocket (/agents/a11y-agent/:id). Best-effort: if the socket
+  // delivers cf_agent_state we render instantly and flip to "live"; if it can't open, the poll above covers.
+  var ws = null;
+  function connectWS(d){
+    if(!d || ws) return;
+    try{
+      var u = ORIGIN.replace(/^http/,"ws") + "/agents/a11y-agent/" + encodeURIComponent(d);
+      ws = new WebSocket(u);
+      ws.onmessage = function(ev){
+        var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+        if(m && m.type==="cf_agent_state" && m.state){ mode="live"; setConn("mode: <b>live</b> · socket"); render({report:m.state}); }
+      };
+      ws.onclose = function(){ ws = null; };
+      ws.onerror = function(){ try{ ws.close(); }catch(e){} };
+    }catch(e){}
+  }
+  function connectLive(d){ if(!d) return; startPolling(); connectWS(d); }
+  function sendChat(){
+    var d = docEl.value || id, inp = document.getElementById("chatin"); var t = inp.value.trim();
+    if(!d || !t) return; inp.value = "";
+    if(!lastReport) lastReport = { chat: [] };
+    lastReport.chat = (lastReport.chat||[]).concat([{ role:"user", text:t, at:Date.now() }]); lastReport.thinking = true;
+    renderChat(lastReport);
+    fetch(ORIGIN+"/v2/chat",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({id:d,text:t})})
+      .then(function(x){return x.json();}).then(function(j){ render(j); })
+      .catch(function(){ if(lastReport){ lastReport.thinking=false; renderChat(lastReport); } });
+  }
   function start(d){ if(!d) return; id=d; docEl.value=d; history.replaceState(null,"","?id="+encodeURIComponent(d)); poll(); connectLive(d); }
 
   document.getElementById("run").onclick = function(){
@@ -338,6 +398,8 @@ export const UI_HTML = `<!doctype html>
       .then(function(x){return x.json();}).then(function(j){ render(j); connectLive(d); }).catch(function(){ setConn("error"); });
   };
   document.getElementById("std").onchange = function(e){ activeStandard = e.target.value; activeArea = "checklist"; render(lastReport); };
+  document.getElementById("chatsend").onclick = sendChat;
+  document.getElementById("chatin").addEventListener("keydown", function(e){ if(e.key==="Enter"){ sendChat(); } });
 
   // MCP App host bridge: the host delivers the tool result (structuredContent) via postMessage. SECURITY
   // (review P2): never render the posted payload — an embedder that frames /ui could otherwise spoof an

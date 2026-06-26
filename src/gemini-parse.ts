@@ -76,3 +76,27 @@ function geminiText(obj: unknown): string {
   if (!Array.isArray(parts)) return '';
   return parts.map((p) => p.text || '').join('');
 }
+
+/**
+ * One-shot (non-streaming) Gemini text completion. Backs the A11yAgent's conversational `chat()` surface —
+ * answers a user question grounded in the live audit state. Mirrors streamGeminiHtml's auth/endpoint, but
+ * a single generateContent call (no SSE) since the reply is short.
+ */
+export async function geminiComplete(apiKey: string, prompt: string, model?: string): Promise<string> {
+  const m = model || GEMINI_MODEL;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, thinkingConfig: { thinkingLevel: 'low' } },
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`gemini ${res.status}: ${detail.slice(0, 200)}`);
+  }
+  const obj = await res.json().catch(() => null);
+  return geminiText(obj).trim() || '(no reply)';
+}
