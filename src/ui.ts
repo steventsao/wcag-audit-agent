@@ -1,13 +1,12 @@
-// ui.ts — the LIVE agent session for the PDF accessibility audit. This is NOT a dashboard: it is one
-// conversation thread. The A11yAgent narrates its progress AS messages (driven by report.events), its
-// findings appear as soft inline cards (report.wcag), and the human can comment / ask questions inline —
-// the agent replies over the same live setState broadcast (report.chat + report.thinking). State arrives
-// over the cloudflare/agents WebSocket (/agents/a11y-agent/:id, cf_agent_state) with a /v2/audit-status
-// poll fallback. Served at GET /ui?id= and /app, AND as the ui:// MCP App resource (mcp.ts).
+// ui.ts — the LIVE agent session as a full-viewport app shell (no page scroll). LEFT panel: the
+// conversation — the A11yAgent narrates its progress as messages (report.events) and the human comments /
+// asks inline, the agent replying live (report.chat/thinking); this panel scrolls on its own. RIGHT panel:
+// the report artifact that builds beside the chat (report.wcag findings + gate), scrolling independently.
+// State arrives over the cloudflare/agents WebSocket (/agents/a11y-agent/:id, cf_agent_state) with a
+// /v2/audit-status poll fallback. Served at GET /ui?id= and /app, AND as the ui:// MCP App resource.
 //
-// FOOT-GUN: the <script> below contains ZERO backticks and ZERO ${} — string concatenation with single
-// quotes only — because an inner backtick would close this outer html=`...` template (surfacing as a
-// misleading "Unexpected token" at module load). Keep it that way.
+// FOOT-GUN: the <script> below contains ZERO backticks and ZERO ${} — single-quoted string concatenation
+// only — because an inner backtick would close this outer html=`...` template. Keep it that way.
 
 export const UI_HTML = `<!doctype html>
 <html lang="en"><head>
@@ -16,53 +15,81 @@ export const UI_HTML = `<!doctype html>
 <style>
   :root{ --ink:#1f2430;--mut:#6b7280;--line:#e6e9ee;--bg:#f3f5f8;--paper:#fff;--head:#17324d;--accent:#0f4f6f;
          --pass:#15803d;--passbg:#e7f6ec;--fail:#b42318;--failbg:#fdecea;--warn:#b45309;--warnbg:#fdf3e3; }
-  *{box-sizing:border-box} html,body{margin:0;height:100%}
-  body{background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
-       display:flex;flex-direction:column;min-height:100vh}
-  .top{display:flex;align-items:center;gap:14px;background:var(--paper);border-bottom:1px solid var(--line);
-       padding:11px 18px;position:sticky;top:0;z-index:5}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{height:100dvh;overflow:hidden;background:var(--bg);color:var(--ink);
+       font:15px/1.5 system-ui,-apple-system,"Segoe UI",Arial,sans-serif;display:flex;flex-direction:column}
+
+  /* header */
+  .top{flex:0 0 auto;display:flex;align-items:center;gap:14px;background:var(--paper);
+       border-bottom:1px solid var(--line);padding:10px 18px}
   .brand{display:flex;flex-direction:column;line-height:1.2}
   .brand .k{font-size:10.5px;letter-spacing:.5px;color:var(--accent);font-weight:800;text-transform:uppercase}
   .brand h1{margin:1px 0 0;font-size:16px;color:var(--head)}
   .spacer{flex:1}
   .starter{display:flex;gap:7px;align-items:center}
-  .starter input{width:230px;max-width:40vw;border:1px solid var(--line);border-radius:9px;padding:7px 10px;font:inherit;background:#fbfcfd}
+  .starter input{width:240px;max-width:38vw;border:1px solid var(--line);border-radius:9px;padding:7px 10px;font:inherit;background:#fbfcfd}
   .starter button{border:0;background:var(--accent);color:#fff;font-weight:700;border-radius:9px;padding:8px 14px;cursor:pointer}
   .dot{font-size:11px;color:var(--mut);white-space:nowrap} .dot b{color:var(--accent)}
-  @media(max-width:640px){ .brand h1{font-size:14px} .starter input{width:130px} .dot{display:none} }
 
-  .thread{flex:1;width:100%;max-width:760px;margin:0 auto;padding:22px 16px 130px;display:flex;flex-direction:column;gap:14px}
+  /* full-height shell: left conversation + right report, each its own scroll region */
+  .shell{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(340px,420px) 1fr}
+  .side{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line);background:var(--paper)}
+  .thread{flex:1 1 auto;min-height:0;overflow-y:auto;padding:18px 16px;display:flex;flex-direction:column;gap:12px}
+  .composer{flex:0 0 auto;border-top:1px solid var(--line);padding:11px 12px;background:var(--paper)}
+  .composer .inner{display:flex;gap:8px;background:#fbfcfd;border:1px solid var(--line);border-radius:13px;padding:5px 5px 5px 12px}
+  .composer input{flex:1;border:0;outline:0;font:inherit;padding:8px 0;background:transparent}
+  .composer button{border:0;background:var(--accent);color:#fff;font-weight:700;border-radius:10px;padding:9px 16px;cursor:pointer}
+  .main{min-height:0;overflow-y:auto;padding:20px;background:var(--bg)}
+
+  /* conversation bubbles */
   .row{display:flex;gap:10px;align-items:flex-start}
   .row.user{flex-direction:row-reverse}
-  .av{width:28px;height:28px;border-radius:50%;flex:0 0 28px;display:flex;align-items:center;justify-content:center;
-      font-size:11px;font-weight:800;background:#e6eef3;color:var(--accent)}
+  .av{width:26px;height:26px;border-radius:50%;flex:0 0 26px;display:flex;align-items:center;justify-content:center;
+      font-size:10px;font-weight:800;background:#e6eef3;color:var(--accent)}
   .row.user .av{background:var(--accent);color:#fff}
-  .bub{max-width:80%;padding:10px 13px;border-radius:15px;background:var(--paper);border:1px solid var(--line);
-       box-shadow:0 1px 2px rgba(16,40,60,.04);white-space:pre-wrap}
+  .bub{max-width:84%;padding:9px 12px;border-radius:14px;background:#f7f9fb;border:1px solid var(--line);white-space:pre-wrap}
   .row.user .bub{background:var(--accent);color:#eaf4fa;border-color:var(--accent)}
-  .bub .who{font-size:10.5px;color:var(--mut);font-weight:700;margin-bottom:2px;text-transform:uppercase;letter-spacing:.3px}
+  .bub .who{font-size:10px;color:var(--mut);font-weight:700;margin-bottom:2px;text-transform:uppercase;letter-spacing:.3px}
   .row.user .bub .who{color:#cfe6f0}
-  .bub .t{font-size:12px;color:var(--mut);margin-top:3px}
+  .bub .t{font-size:11.5px;color:var(--mut);margin-top:3px}
   .row.think .bub{color:var(--mut);font-style:italic}
 
-  .card{max-width:82%;background:var(--paper);border:1px solid var(--line);border-radius:15px;padding:12px 14px}
-  .card .h{font-weight:800;color:var(--head);margin-bottom:8px;font-size:14px}
-  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:8px}
-  .chip{font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;background:#eef2f6;color:var(--mut)}
+  /* report artifact (right) */
+  .rhead{margin-bottom:14px}
+  .rh-title{font-size:12px;font-weight:800;color:var(--head);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+  .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;background:#eef2f6;color:var(--mut);text-transform:capitalize}
   .chip.pass{background:var(--passbg);color:var(--pass)} .chip.fail{background:var(--failbg);color:var(--fail)} .chip.warn{background:var(--warnbg);color:var(--warn)}
-  .flist{display:flex;flex-direction:column;gap:5px}
-  .fitem{font-size:13px} .fitem b{color:var(--fail)} .fitem .sc{color:var(--mut);font-weight:600}
-  .gate{display:flex;gap:8px;align-items:center;margin-top:9px;flex-wrap:wrap}
-  .gate button{font:inherit;font-weight:700;border-radius:9px;padding:7px 14px;cursor:pointer;border:1px solid}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px;max-width:760px}
+  .card .h{font-weight:800;color:var(--head);margin-bottom:9px;font-size:14px}
+  .flist{display:flex;flex-direction:column;gap:6px}
+  .fitem{font-size:13.5px;padding:6px 0;border-top:1px solid var(--line)} .fitem:first-child{border-top:0}
+  .fitem b{color:var(--fail)} .fitem.h b{color:var(--warn)} .fitem .sc{color:var(--mut)}
+  .gate{display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap}
+  .gate button{font:inherit;font-weight:700;border-radius:9px;padding:8px 15px;cursor:pointer;border:1px solid}
   .gate .ap{background:var(--passbg);border-color:#a7dcbf;color:var(--pass)} .gate .rj{background:var(--failbg);border-color:#e6b3a9;color:var(--fail)}
-  .gatemsg{font-size:13px;color:var(--mut)}
+  .gatemsg{font-size:13px;color:var(--mut);margin-bottom:4px}
+  .empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:9px;color:var(--mut);padding:30px}
+  .empty .eh{font-size:17px;font-weight:800;color:var(--head)}
+  .empty .ep{max-width:400px;font-size:14px}
+  .samples{display:flex;flex-direction:column;gap:8px;width:100%;max-width:360px;margin-top:6px}
+  .samples .sl{font-size:11px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:var(--mut);text-align:left}
+  .sample{display:flex;flex-direction:column;align-items:flex-start;gap:1px;text-align:left;width:100%;
+          border:1px solid var(--line);background:var(--paper);border-radius:11px;padding:9px 13px;cursor:pointer;
+          font:inherit;transition:border-color .12s,box-shadow .12s}
+  .sample:hover{border-color:var(--accent);box-shadow:0 6px 18px -10px rgba(16,40,60,.55)}
+  .sample .st{font-weight:700;color:var(--head);font-size:13.5px}
+  .sample .su{font-size:11.5px;color:var(--mut)}
 
-  .composer{position:fixed;left:0;right:0;bottom:0;padding:14px 16px;
-            background:linear-gradient(180deg,rgba(243,245,248,0),var(--bg) 36%)}
-  .composer .inner{max-width:760px;margin:0 auto;display:flex;gap:9px;background:var(--paper);border:1px solid var(--line);
-                   border-radius:16px;padding:7px 7px 7px 14px;box-shadow:0 8px 28px -18px rgba(16,40,60,.5)}
-  .composer input{flex:1;border:0;outline:0;font:inherit;padding:8px 0;background:transparent}
-  .composer button{border:0;background:var(--accent);color:#fff;font-weight:700;border-radius:11px;padding:9px 18px;cursor:pointer}
+  @media(max-width:820px){
+    body{height:auto;min-height:100dvh;overflow:auto}
+    .shell{grid-template-columns:1fr}
+    .side{border-right:0;border-bottom:1px solid var(--line)}
+    .thread{max-height:56vh}
+    .starter input{width:150px}
+    .dot{display:none}
+  }
 </style></head>
 <body>
   <header class="top">
@@ -74,14 +101,18 @@ export const UI_HTML = `<!doctype html>
     </div>
     <span class="dot" id="conn">idle</span>
   </header>
-  <main class="thread" id="thread"></main>
-  <div class="composer"><div class="inner">
-    <input id="chatin" placeholder="Type a comment or question…" aria-label="Message the agent"/>
-    <button id="chatsend">Send</button>
-  </div></div>
+
+  <div class="shell">
+    <aside class="side">
+      <div class="thread" id="thread"></div>
+      <div class="composer"><div class="inner">
+        <input id="chatin" placeholder="Type a comment or question…" aria-label="Message the agent"/>
+        <button id="chatsend">Send</button>
+      </div></div>
+    </aside>
+    <main class="main" id="report"></main>
+  </div>
 <script>
-  // Injected by the worker at serve time (serveUiHtml / the MCP resource handler). Same-origin (GET /app,
-  // /ui) keeps the placeholder and falls back to location.origin.
   var ORIGIN = '__WORKER_ORIGIN__'; if(ORIGIN.indexOf('__')===0){ ORIGIN = location.origin; }
   var qs = new URLSearchParams(location.search);
   var id = qs.get('id') || '';
@@ -90,7 +121,7 @@ export const UI_HTML = `<!doctype html>
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function setConn(t){ document.getElementById('conn').innerHTML = t; }
 
-  // Turn a terse event name into a one-line piece of agent narration (no raw log strings on screen).
+  // terse event name -> one line of agent narration (no raw log strings on screen)
   function humanize(ev){
     ev = String(ev||'');
     if(ev.indexOf('start')>=0) return 'Starting the audit';
@@ -104,7 +135,6 @@ export const UI_HTML = `<!doctype html>
     return ev.replace(/[._]+/g,' ').replace(/^./,function(c){ return c.toUpperCase(); });
   }
 
-  // Merge the agent's event narration + the chat turns into one time-ordered thread.
   function timeline(r){
     var items = [];
     (r.events||[]).forEach(function(e){
@@ -120,67 +150,99 @@ export const UI_HTML = `<!doctype html>
 
   function bubble(it){
     var isU = it.k==='user';
-    var who = isU ? 'You' : 'Agent';
-    var av = isU ? 'U' : 'AI';
     var tag = it.tag ? ('<div class="t">'+esc(it.tag)+'</div>') : '';
-    return '<div class="row '+it.k+'"><div class="av">'+av+'</div>'+
-           '<div class="bub"><div class="who">'+who+'</div>'+esc(it.text)+tag+'</div></div>';
+    return '<div class="row '+it.k+'"><div class="av">'+(isU?'U':'AI')+'</div>'+
+           '<div class="bub"><div class="who">'+(isU?'You':'Agent')+'</div>'+esc(it.text)+tag+'</div></div>';
+  }
+
+  function welcome(){
+    return bubble({ k:'agent', tag:'', text:'Hi — I audit PDFs for accessibility against WCAG 2.2 AA. Pick a sample on the right, or paste a PDF URL up top and hit Audit — then watch the report build live. Ask me anything about it here.' });
+  }
+
+  // LEFT: the conversation thread (scrolls itself)
+  function renderThread(r){
+    var html = '';
+    var has = r && ((r.events && r.events.length) || (r.chat && r.chat.length));
+    if(!has){ html += welcome(); }
+    else { html += timeline(r).map(bubble).join(''); }
+    if(r && r.thinking){ html += '<div class="row think"><div class="av">AI</div><div class="bub"><div class="who">Agent</div>thinking…</div></div>'; }
+    var th = document.getElementById('thread');
+    th.innerHTML = html;
+    th.scrollTop = th.scrollHeight;
+  }
+
+  // RIGHT: the report artifact (scrolls itself)
+  function reportHeader(r){
+    var g = r.gate || 'open';
+    var steps = (r.steps||[]).map(function(s){
+      return '<span class="chip '+(s.status==='done'?'pass':'')+'">'+esc(s.step)+'</span>';
+    }).join('');
+    return '<div class="rhead"><div class="rh-title">Audit status</div><div class="chips">'+
+           '<span class="chip '+(g==='finalized'?'pass':(g==='pending_review'?'warn':(g==='rejected'?'fail':'')))+'">'+esc(String(g).replace(/_/g,' '))+'</span>'+
+           steps+'</div></div>';
   }
 
   function findingsCard(r){
     var w = r.wcag; if(!w || !w.summary) return '';
-    var s = w.summary, fails = [];
+    var s = w.summary, fails = [], humans = [];
     (w.areas||[]).forEach(function(a){ (a.verdicts||[]).forEach(function(v){
-      if(String(v.verdict).toLowerCase().indexOf('fail')>=0) fails.push(v);
+      var vr = String(v.verdict).toLowerCase();
+      if(vr.indexOf('fail')>=0) fails.push(v);
+      else if(v.needs_human || vr.indexOf('human')>=0 || vr.indexOf('cannot')>=0) humans.push(v);
     }); });
     var chips = '<span class="chip">'+esc(s.total)+' criteria</span>'+
                 '<span class="chip pass">'+esc(s.passed)+' pass</span>'+
                 '<span class="chip fail">'+esc(s.failed)+' fail</span>'+
                 '<span class="chip warn">'+esc(s.needsHuman)+' needs human</span>'+
                 '<span class="chip">'+esc(s.notApplicable)+' n/a</span>';
-    var list = '';
-    if(fails.length){
-      list = '<div class="flist">'+fails.slice(0,6).map(function(v){
-        return '<div class="fitem"><b>'+esc(v.sc)+'</b> <span class="sc">'+esc(v.name||'')+'</span></div>';
-      }).join('')+'</div>';
-    }
-    return '<div class="row"><div class="av">AI</div><div class="card"><div class="h">WCAG 2.2 AA results</div>'+
-           '<div class="chips">'+chips+'</div>'+list+'</div></div>';
+    var rows = '';
+    fails.slice(0,14).forEach(function(v){ rows += '<div class="fitem"><b>'+esc(v.sc)+'</b> <span class="sc">'+esc(v.name||'')+'</span></div>'; });
+    humans.slice(0,8).forEach(function(v){ rows += '<div class="fitem h"><b>'+esc(v.sc)+'</b> <span class="sc">'+esc(v.name||'')+' · needs human</span></div>'; });
+    var list = rows ? ('<div class="flist">'+rows+'</div>') : '<div class="gatemsg">No failing criteria.</div>';
+    return '<div class="card"><div class="h">WCAG 2.2 AA results</div><div class="chips" style="margin-bottom:10px">'+chips+'</div>'+list+'</div>';
   }
 
   function gateCard(r){
     var g = r.gate || 'open';
     if(g==='pending_review'){
-      return '<div class="row"><div class="av">AI</div><div class="card"><div class="h">Human review needed</div>'+
+      return '<div class="card"><div class="h">Human review needed</div>'+
         '<div class="gatemsg">A machine pass is a pre-assessment. Approve to attest, or reject to send it back.</div>'+
-        '<div class="gate"><button class="ap" id="ap">Approve · attest</button><button class="rj" id="rj">Reject</button></div></div></div>';
+        '<div class="gate"><button class="ap" id="ap">Approve · attest</button><button class="rj" id="rj">Reject</button></div></div>';
     }
-    if(g==='finalized') return bubble({ k:'agent', text:'Attested — the report is finalized.', tag:'' });
-    if(g==='rejected')  return bubble({ k:'agent', text:'Rejected — sending this back for changes.', tag:'' });
     return '';
   }
 
-  function welcome(){
-    return bubble({ k:'agent', tag:'', text:'Hi — I audit PDFs for accessibility against WCAG 2.2 AA. Paste a PDF URL up top and hit Audit, or just ask me anything about a document.' });
+  var SAMPLES = [
+    { t:'Attention Is All You Need', s:'arXiv · untagged research paper', u:'https://arxiv.org/pdf/1706.03762' },
+    { t:'Conditional GANs (Mirza)', s:'arXiv · figures & equations', u:'https://arxiv.org/pdf/1411.1784' },
+    { t:'Sample report PDF', s:'mixed prose, tables & images', u:'https://files.catbox.moe/0aq88m.pdf' }
+  ];
+  function sampleBtn(x){ return '<button class="sample" data-url="'+esc(x.u)+'"><span class="st">'+esc(x.t)+'</span><span class="su">'+esc(x.s)+'</span></button>'; }
+  function runSample(u){ var inp = document.getElementById('pdf'); if(inp){ inp.value = u; } runAudit(); }
+
+  function renderReport(r){
+    var el = document.getElementById('report');
+    var w = r && r.wcag;
+    var hasAudit = r && (w || (r.pipeline && r.pipeline.audit));
+    if(!hasAudit){
+      el.innerHTML = '<div class="empty"><div class="eh">Audit a PDF</div>'+
+        '<div class="ep">Paste a URL up top, or start with a sample — the accessibility findings build here live as I work, and you can ask me about any of them in the chat on the left.</div>'+
+        '<div class="samples"><div class="sl">One-click samples</div>'+SAMPLES.map(sampleBtn).join('')+'</div></div>';
+      Array.prototype.forEach.call(el.querySelectorAll('.sample'), function(b){
+        b.onclick = function(){ runSample(b.getAttribute('data-url')); };
+      });
+      return;
+    }
+    el.innerHTML = reportHeader(r) + findingsCard(r) + gateCard(r);
+    var ap = document.getElementById('ap'), rj = document.getElementById('rj');
+    if(ap) ap.onclick = function(){ decide('approve'); };
+    if(rj) rj.onclick = function(){ decide('reject'); };
   }
 
   function render(d){
     if(d){ lastReport = d.report || d; }
-    var r = lastReport;
-    var html = '';
-    var hasThread = r && ((r.events && r.events.length) || (r.chat && r.chat.length));
-    if(!hasThread){ html += welcome(); }
-    else {
-      html += timeline(r).map(bubble).join('');
-      html += findingsCard(r);
-      html += gateCard(r);
-    }
-    if(r && r.thinking){ html += '<div class="row think"><div class="av">AI</div><div class="bub"><div class="who">Agent</div>thinking…</div></div>'; }
-    document.getElementById('thread').innerHTML = html;
-    var ap = document.getElementById('ap'), rj = document.getElementById('rj');
-    if(ap) ap.onclick = function(){ decide('approve'); };
-    if(rj) rj.onclick = function(){ decide('reject'); };
-    window.scrollTo(0, document.body.scrollHeight);
+    renderThread(lastReport);
+    renderReport(lastReport);
   }
 
   function decide(dec){
@@ -197,8 +259,6 @@ export const UI_HTML = `<!doctype html>
   var pt = null;
   function startPolling(){ if(pt) return; poll(); pt = setInterval(poll, 1500); }
 
-  // Live push over the cloudflare/agents WebSocket. Best-effort: if cf_agent_state arrives we render
-  // instantly and flip to "live · socket"; if the socket can't open, the poll above covers.
   var ws = null, wsDoc = null;
   function connectWS(d){
     if(!d) return;
@@ -248,9 +308,8 @@ export const UI_HTML = `<!doctype html>
   document.getElementById('chatsend').onclick = sendChat;
   document.getElementById('chatin').addEventListener('keydown', function(e){ if(e.key==='Enter'){ sendChat(); } });
 
-  // MCP App host bridge: the host delivers the tool result (structuredContent) via postMessage. SECURITY:
-  // never render the posted payload — require our OWN report-summary shape, bind the docId only on first
-  // delivery, and ALWAYS fetch authoritative state from the worker, never trust e.data.
+  // MCP App host bridge: bind only from our OWN report-summary shape, fetch authoritative state, never
+  // render the posted payload.
   window.addEventListener('message', function(e){
     var p = e.data; if(!p || typeof p!=='object') return;
     var sc = p.structuredContent || (p.result && p.result.structuredContent) || (p.toolResult && p.toolResult.structuredContent) || (p.params && p.params.structuredContent);
