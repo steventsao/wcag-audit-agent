@@ -99,8 +99,8 @@ export const UI_HTML = `<!doctype html>
 <body>
   <header class="app-header">
     <div class="title-block">
-      <p class="product">WCAG audit · rule review</p>
-      <h1>PDF Accessibility Evidence</h1>
+      <p class="product">WCAG 2.2 AA · PDF/UA</p>
+      <h1>PDF Accessibility Report</h1>
     </div>
     <div class="facet-tabs" id="phases"></div>
   </header>
