@@ -18,7 +18,9 @@
     "mcp"
   ],
   "scripts": {
-    "deploy": "wrangler deploy",
+    "deploy:dev": "wrangler deploy --name wcag-audit-agent-dev --containers-rollout=none",
+    "deploy:prod": "wrangler deploy",
+    "deploy": "wrangler deploy --name wcag-audit-agent-dev --containers-rollout=none",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "probe": "node scripts/probe-local.mjs"
