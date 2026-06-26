@@ -363,13 +363,17 @@ export const UI_HTML = `<!doctype html>
   function startPolling(){ if(pt) return; poll(); pt = setInterval(poll, 1800); }
   // Live push over the cloudflare/agents WebSocket (/agents/a11y-agent/:id). Best-effort: if the socket
   // delivers cf_agent_state we render instantly and flip to "live"; if it can't open, the poll above covers.
-  var ws = null;
+  var ws = null, wsDoc = null;
   function connectWS(d){
-    if(!d || ws) return;
+    if(!d) return;
+    if(ws && wsDoc===d) return;                        // already live on this doc
+    if(ws){ try{ ws.close(); }catch(e){} ws = null; }  // doc changed → drop the stale socket first
+    wsDoc = d;
     try{
       var u = ORIGIN.replace(/^http/,"ws") + "/agents/a11y-agent/" + encodeURIComponent(d);
       ws = new WebSocket(u);
       ws.onmessage = function(ev){
+        if(wsDoc !== (docEl.value || id)) return;       // ignore pushes for a doc we've navigated away from
         var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
         if(m && m.type==="cf_agent_state" && m.state){ mode="live"; setConn("mode: <b>live</b> · socket"); render({report:m.state}); }
       };

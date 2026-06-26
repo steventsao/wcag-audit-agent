@@ -1458,9 +1458,11 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
     } catch (e) {
       reply = 'Sorry — I could not compose a reply: ' + (e instanceof Error ? e.message : String(e));
     }
+    // Append to the CURRENT chat (not the stale `withUser` snapshot captured before the await) so a second
+    // overlapping /v2/chat request's turn isn't clobbered while Gemini was composing this reply.
     this.setState({
       ...this.state,
-      chat: [...withUser, { role: 'assistant', text: reply, at: Date.now() }],
+      chat: [...(this.state.chat ?? withUser), { role: 'assistant', text: reply, at: Date.now() }],
       thinking: false,
       updatedAt: Date.now(),
     });
@@ -1477,7 +1479,8 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
     const recent = (s.events ?? []).slice(-6).map((e) => e.event).join(', ') || 'none';
     const ctx = [
       'docId: ' + (s.docId ?? 'none'),
-      'pdfUrl: ' + (s.pdfUrl ?? 'none'),
+      // redactUrl strips the query string — never leak signed/presigned URL credentials into the LLM prompt.
+      'source PDF: ' + (s.pdfUrl ? redactUrl(s.pdfUrl) : 'none'),
       'report gate: ' + (s.gate ?? 'open'),
       'pipeline steps: ' + steps,
       w
