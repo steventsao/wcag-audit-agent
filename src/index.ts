@@ -174,7 +174,10 @@ export default {
     // host may proxy /s/* here via a service binding so /s/:id is reachable under the public origin.
     const landing = () => new Response(LANDING_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', ...CORS } });
     if ((path === '/new' || path === '/s') && req.method === 'GET') return landing();
-    if (path === '/' && req.method === 'GET' && (req.headers.get('accept') || '').includes('text/html')) return landing();
+    // Apex renders the same live audit UI as /app and /ui (a bare-domain visit shouldn't 404 or land on a
+    // different surface — reviewers may hit the root).
+    if (path === '/' && req.method === 'GET' && (req.headers.get('accept') || '').includes('text/html'))
+      return new Response(UI_HTML.replaceAll('__WORKER_ORIGIN__', url.origin), { headers: { 'content-type': 'text/html; charset=utf-8', ...CORS } });
 
     // POST /s {url?,title?} → 303 /s/:sessionId (feels like a normal redirect to a webpage).
     // GET /s/:id           → progressively-streaming HTML shell (latest durable snapshot; noindex).
