@@ -12,6 +12,9 @@ FAL_KEY=
 # handoff that lets a private session embed its sandboxed iframe cross-origin). Use a long random value.
 FRAME_SIGN_KEY=
 
+# Required for /audit, /decide, /status, /v2/*, and /agents/*; use a long random server-side token.
+AUDIT_API_TOKEN=
+
 # Optional — shared secret for the live-doc claim bridge (associating an anonymous session with a user).
 LIVE_DOC_CLAIM_SECRET=
 

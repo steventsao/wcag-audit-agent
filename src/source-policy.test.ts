@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assertUrlIngestAllowed, isBlockedNetworkHost } from './source-policy';
+import { assertUrlIngestAllowed, fetchAllowedPdf, isBlockedNetworkHost } from './source-policy';
 
 describe('isBlockedNetworkHost (SSRF guard)', () => {
   it('blocks loopback, link-local, private and reserved IPv4', () => {
@@ -51,5 +51,37 @@ describe('isBlockedNetworkHost (SSRF guard)', () => {
     const arxiv = assertUrlIngestAllowed('https://arxiv.org/pdf/2401.00001.pdf');
     expect(arxiv.ok).toBe(true);
     expect(arxiv.level).toBe('L1');
+  });
+});
+
+describe('fetchAllowedPdf', () => {
+  it('checks a redirect destination before any follow-up fetch', async () => {
+    const seen: string[] = [];
+    const mockFetch = (async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/meta-data/' } });
+    }) as typeof fetch;
+    await expect(fetchAllowedPdf('https://example.org/file.pdf', mockFetch)).rejects.toThrow('url_not_allowed');
+    expect(seen).toEqual(['https://example.org/file.pdf']);
+  });
+
+  it('rejects both declared and streamed oversized responses', async () => {
+    const declared = (async () => new Response('x', { headers: { 'content-length': '10' } })) as typeof fetch;
+    await expect(fetchAllowedPdf('https://example.org/file.pdf', declared, 5)).rejects.toThrow('pdf_too_large');
+    const streamed = (async () => new Response('123456')) as typeof fetch;
+    await expect(fetchAllowedPdf('https://example.org/file.pdf', streamed, 5)).rejects.toThrow('pdf_too_large');
+  });
+
+  it('returns a bounded public response after a safe redirect', async () => {
+    const seen: string[] = [];
+    const mockFetch = (async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return seen.length === 1
+        ? new Response(null, { status: 302, headers: { location: '/final.pdf' } })
+        : new Response('PDF');
+    }) as typeof fetch;
+    const bytes = await fetchAllowedPdf('https://example.org/start', mockFetch, 8);
+    expect(new TextDecoder().decode(bytes)).toBe('PDF');
+    expect(seen).toEqual(['https://example.org/start', 'https://example.org/final.pdf']);
   });
 });

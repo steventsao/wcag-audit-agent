@@ -24,7 +24,8 @@ workers_dev = true
 
 # Secrets (set with `wrangler secret put <NAME>`): GEMINI_API_KEY (required, the VLM parse),
 # FAL_KEY (optional, the WCAG 1.4.3 contrast layerize lane), FRAME_SIGN_KEY (required in prod, the
-# private-session chrome→content frame-capability HMAC), LIVE_DOC_CLAIM_SECRET (optional claim bridge).
+# private-session chrome→content frame-capability HMAC), LIVE_DOC_CLAIM_SECRET (optional claim bridge),
+# AUDIT_API_TOKEN (required for /audit, /decide, /status, /v2/*, and /agents/*; missing secret fails closed).
 
 [observability]
 enabled = true

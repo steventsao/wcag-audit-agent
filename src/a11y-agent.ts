@@ -2,6 +2,8 @@ import { Agent, callable } from 'agents';
 // @ts-ignore - plain-JS ESM module, bundled by wrangler/esbuild
 import { probePdf } from './probe.mjs';
 import { ValidatorAgent, type ValidatorEnv } from './agents/validator-agent';
+import { fetchAllowedPdf } from './source-policy';
+import { ownerHashMatches } from './audit-security';
 import { ColorContrastAgent, type ContrastEnv } from './agents/contrast-agent';
 import { WcagAgent, type WcagEnv, type WcagRollup } from './agents/wcag-agent';
 import type { A11ySpecialist, AssessParams } from './specialist';
@@ -32,6 +34,8 @@ import { geminiComplete } from './gemini-parse';
  */
 export interface Env extends ValidatorEnv, ContrastEnv, WcagEnv {
   A11Y_AGENT: DurableObjectNamespace<A11yAgent>;
+  /** Required secret for the private audit, decision, report, and Agent SDK routes. */
+  AUDIT_API_TOKEN?: string;
   SPECIALIST_WORKFLOW: Workflow;
   REMEDIATION_WORKFLOW: Workflow;
   OPENROUTER_API_KEY?: string;
@@ -57,6 +61,8 @@ type Gate = 'open' | 'pending_review' | 'finalized' | 'rejected';
 
 export interface AuditRecord {
   pdfUrl: string;
+  /** Hash of the capability returned once to the creator; never exposed by summarize(). */
+  ownerTokenHash?: string;
   createdAt: number;
   decidedAt?: number;
   gate: Gate;
@@ -281,14 +287,12 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
 
   // ───────────────────────── legacy byte-audit surface (prod) ─────────────────────────
 
-  async audit(pdfUrl: string): Promise<AuditRecord> {
-    const res = await fetch(pdfUrl, { headers: { 'user-agent': 'wcag-audit-agent/0.1 (+https://app.example.com)' } });
-    if (!res.ok) throw new Error(`fetch_failed ${res.status} for ${pdfUrl}`);
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    return this.auditBytes(pdfUrl, bytes);
+  async audit(pdfUrl: string, ownerTokenHash?: string): Promise<AuditRecord> {
+    const bytes = await fetchAllowedPdf(pdfUrl);
+    return this.auditBytes(pdfUrl, bytes, ownerTokenHash);
   }
 
-  async auditBytes(source: string, bytes: Uint8Array): Promise<AuditRecord> {
+  async auditBytes(source: string, bytes: Uint8Array, ownerTokenHash?: string): Promise<AuditRecord> {
     const probe = await probePdf(bytes);
 
     // Decide the gate: any error finding, or a criterion code can't decide → human.
@@ -303,6 +307,7 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
 
     const rec: AuditRecord = {
       pdfUrl: source,
+      ownerTokenHash,
       createdAt: Date.now(),
       gate: needsHuman ? 'pending_review' : 'finalized',
       tier: needsHuman ? 'Audited' : 'Remediated',
@@ -321,9 +326,11 @@ export class A11yAgent extends Agent<Env, A11yReportState> {
   }
 
   // The human-gate resolution (AskUserQuestion answer → this). Flips the gate.
-  async decide(decision: 'approve' | 'reject', note?: string): Promise<AuditRecord> {
+  async decide(decision: 'approve' | 'reject', note?: string, ownerTokenHash?: string): Promise<AuditRecord> {
     const rec = await this.ctx.storage.get<AuditRecord>('record');
     if (!rec) throw new Error('no_audit_record');
+    // Older records have no capability and require a fresh audit before they can be attested.
+    if (!ownerHashMatches(rec.ownerTokenHash, ownerTokenHash)) throw new Error('not_authorized');
     if (decision === 'approve') {
       rec.gate = 'finalized';
       rec.finalized = true;
