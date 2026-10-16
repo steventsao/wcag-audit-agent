@@ -4,7 +4,8 @@ main = "src/index.ts"
 # the Agents SDK's facets / sub-agents are enabled by default (no experimental flag needed).
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = true
+workers_dev = false
+preview_urls = false
 
 # Optional: serve the public viewer + sandboxed content iframe from your own hostnames. The content
 # origin is deliberately a SEPARATE host so untrusted VLM-rendered HTML is sandboxed away from the main
