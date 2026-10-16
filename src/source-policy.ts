@@ -87,3 +87,61 @@ export function assertUrlIngestAllowed(rawUrl: string): UrlGate {
   }
   return { ok: true, level: 'P', reason: `${host} unclassified — treated as a private, user-asserted view (P); never published.` };
 }
+
+/** Fetch a public PDF with per-hop URL checks and a streamed cap before retaining bytes. */
+export async function fetchAllowedPdf(
+  rawUrl: string,
+  fetcher: typeof fetch = fetch,
+  maxBytes = 20 * 1024 * 1024,
+): Promise<Uint8Array> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let current = rawUrl;
+  try {
+    for (let redirects = 0; redirects <= 3; redirects += 1) {
+      const gate = assertUrlIngestAllowed(current);
+      if (!gate.ok) throw new Error(`url_not_allowed: ${gate.reason}`);
+      const response = await fetcher(current, {
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { 'user-agent': 'wcag-audit-agent/0.1' },
+      });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get('location');
+        if (response.body) await response.body.cancel().catch(() => {});
+        if (!location || redirects === 3) throw new Error('too_many_redirects');
+        current = new URL(location, current).toString();
+        continue;
+      }
+      if (!response.ok) throw new Error(`fetch_failed ${response.status}`);
+      const declaredLength = Number(response.headers.get('content-length'));
+      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+        if (response.body) await response.body.cancel().catch(() => {});
+        throw new Error('pdf_too_large');
+      }
+      const reader = response.body?.getReader();
+      if (!reader) return new Uint8Array();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxBytes) throw new Error('pdf_too_large');
+          chunks.push(value);
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        throw error;
+      }
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+      return bytes;
+    }
+    throw new Error('too_many_redirects');
+  } finally {
+    clearTimeout(timeout);
+  }
+}

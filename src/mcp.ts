@@ -162,11 +162,12 @@ export function createA11yMcpServer(env: Env, clientIp?: string): McpServer {
       // Gemini parse + figure workflow + R2 writes — same cost as POST /s, which is per-IP rate-limited.
       // Mirror that guard here (the mint bypasses the index.ts /s handler), keyed on the proxied client IP.
       const rl = (env as unknown as { SESSIONS_RATELIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> } }).SESSIONS_RATELIMIT;
-      if (rl) {
-        const { success } = await rl.limit({ key: clientIp || 'anon' });
-        if (!success) {
-          return { isError: true, content: [{ type: 'text', text: 'Too many requests — please wait a moment before rendering another document.' }] };
-        }
+      if (!rl) {
+        return { isError: true, content: [{ type: 'text', text: 'Rendering is temporarily unavailable.' }] };
+      }
+      const { success } = await rl.limit({ key: clientIp || 'anon' });
+      if (!success) {
+        return { isError: true, content: [{ type: 'text', text: 'Too many requests — please wait a moment before rendering another document.' }] };
       }
 
       // Mint an UNLISTED live-twin session — readable by anyone holding the unguessable /s/:id (the MCP host

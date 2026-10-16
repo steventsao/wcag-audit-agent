@@ -9,7 +9,7 @@ It pairs two things single-shot tools get wrong:
 
 A machine `PASS` is only ever a **pre-assessment**. Nothing is attested until a human resolves the gate: **Audited → Remediated → Attested**.
 
-> ⚠️ This is a reference implementation extracted for open source. The public/unauthenticated routes are intended for local/lab use — gate them (a service binding, an auth provider, or an API key) before issuing real conformance attestations.
+> ⚠️ This is a reference implementation extracted for open source. The audit and attestation API requires `AUDIT_API_TOKEN`; real conformance attestations still need a product identity and reviewer authorization layer.
 
 ## Demo
 
@@ -50,8 +50,8 @@ The core user flow — drop a PDF → deterministic byte audit → WCAG 2.2 AA r
 | Method | Path | Body | Result |
 |---|---|---|---|
 | GET | `/` | — | health + endpoint list |
-| POST | `/audit` | `{ pdf_url, id? }` or `{ pdf_base64, file_name?, id? }` | run audit → gate / tier / findings |
-| POST | `/decide` | `{ id, decision: approve\|reject, note? }` | resolve the human gate |
+| POST | `/audit` | `{ pdf_url, id? }` or `{ pdf_base64, file_name?, id? }` | run audit → gate / tier / findings + one-time `owner_token` |
+| POST | `/decide` | `{ id, decision: approve\|reject, note? }` + `x-wcag-decision-token` | resolve the human gate |
 | GET | `/status?id=` | — | current gate / tier / findings |
 | GET | `/app?id=` · `/ui?id=` | — | the live WCAG report UI |
 | POST | `/mcp` | JSON-RPC | MCP `view_html` tool + App resources |
@@ -59,13 +59,12 @@ The core user flow — drop a PDF → deterministic byte audit → WCAG 2.2 AA r
 | POST | `/v2/remediate-wf` | `{ pdf_url, id? }` | durable Audit→Remediate→Compare workflow (poll `/v2/audit-status?id=`) |
 | GET/POST | `/s`, `/s/:id` | (form / multipart) | live accessible-HTML twin: drop a PDF, watch it stream |
 
-```bash
-BASE=http://127.0.0.1:8787   # or your deployed worker URL
-curl -sX POST $BASE/audit -H 'content-type: application/json' \
-  -d '{"pdf_url":"https://arxiv.org/pdf/1411.1784","id":"demo"}'
-curl -s "$BASE/status?id=demo"
-curl -sX POST $BASE/decide -H 'content-type: application/json' -d '{"id":"demo","decision":"approve"}'
-```
+Set `AUDIT_API_TOKEN` as a Worker secret and call these routes from a trusted server. Send it as
+`Authorization: Bearer <token>`; never embed it in browser code. Save the `owner_token` returned by
+`/audit` securely and send it as `x-wcag-decision-token` to `/decide`. The capability changes each
+time an ID is re-audited. Existing records need a new audit before they can be decided. The static
+`/app` and `/ui` report pages make direct browser calls and will need a trusted proxy before they can
+use the private endpoints.
 
 ## Quickstart
 
@@ -84,6 +83,7 @@ npm run typecheck # tsc --noEmit
 wrangler secret put GEMINI_API_KEY
 wrangler secret put FRAME_SIGN_KEY     # required in prod (private-session frame capability)
 wrangler secret put FAL_KEY            # optional (WCAG 1.4.3 contrast lane)
+wrangler secret put AUDIT_API_TOKEN    # required for private audit/attestation API
 
 npm run deploy    # wrangler deploy  (builds the MuPDF container — needs Docker running)
 ```
@@ -111,16 +111,16 @@ Every criterion is tagged with its source — `machine` (deterministic or measur
 This is a **reference implementation**. An independent review flagged the following — all are fine for
 local / lab use but **must be addressed before any production deployment** that issues real attestations:
 
-- **Unauthenticated routes.** `/audit`, `/decide`, and the `/v2/*` routes are open with permissive CORS.
-  Anyone who knows or guesses a document `id` can run an audit or finalize an attestation gate. Put them
-  behind a service binding, an auth provider, or an API key before exposing them.
-- **SSRF on URL ingest.** `assertUrlIngestAllowed()` (`src/source-policy.ts`) blocks non-http(s),
-  loopback, link-local, and cloud-metadata targets, and it gates the `/audit` entrypoint. It validates the
-  **initial** URL only — it does **not** re-validate redirect hops, so a public URL that 302s to an
-  internal address can still reach it. In production, fetch with `redirect: "manual"` and re-check each
-  `Location`.
-- **No fetch bound on `/audit`.** The URL fetch has no explicit timeout or byte cap (the live-doc path is
-  rate-limited and page-capped; `/audit` is not).
+- **Private audit API.** `/audit`, `/decide`, `/status`, `/v2/*`, and `/agents/*` fail closed when
+  `AUDIT_API_TOKEN` is unset and otherwise require a bearer token. `/decide` also requires the
+  capability returned by the matching `/audit`; previously stored records need a new audit. The `/v2/*`
+  decision paths currently trust the server credential, so a product gateway must enforce reviewer
+  authorization per report before using them for attestations.
+- **Bounded PDF ingest.** The `/audit` and live `/s` URL fetches check each redirect, time out after
+  15 seconds, and stream at most 20 MiB. Request bodies are capped before JSON/multipart parsing.
+  Public `/s` and `/mcp` creation fails closed if the rate-limit binding is missing. DNS rebinding
+  remains a risk in Workers, and authenticated `/v2/*` validator/contrast URL fetch paths require
+  further source review.
 - **Configure your origins.** `FRAME_ANCESTORS` (`src/live-doc-core.ts`) and the `PUBLIC_ORIGIN` /
   `PUBLIC_VIEWER_ORIGIN` / `CONTENT_ORIGIN` values ship as `example.com` placeholders. Set them to your
   real hostnames or the content iframe's CSP will block it.

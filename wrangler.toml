@@ -4,7 +4,8 @@ main = "src/index.ts"
 # the Agents SDK's facets / sub-agents are enabled by default (no experimental flag needed).
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
-workers_dev = true
+workers_dev = false
+preview_urls = false
 
 # Optional: serve the public viewer + sandboxed content iframe from your own hostnames. The content
 # origin is deliberately a SEPARATE host so untrusted VLM-rendered HTML is sandboxed away from the main
@@ -24,7 +25,8 @@ workers_dev = true
 
 # Secrets (set with `wrangler secret put <NAME>`): GEMINI_API_KEY (required, the VLM parse),
 # FAL_KEY (optional, the WCAG 1.4.3 contrast layerize lane), FRAME_SIGN_KEY (required in prod, the
-# private-session chrome→content frame-capability HMAC), LIVE_DOC_CLAIM_SECRET (optional claim bridge).
+# private-session chrome→content frame-capability HMAC), LIVE_DOC_CLAIM_SECRET (optional claim bridge),
+# AUDIT_API_TOKEN (required for /audit, /decide, /status, /v2/*, and /agents/*; missing secret fails closed).
 
 [observability]
 enabled = true

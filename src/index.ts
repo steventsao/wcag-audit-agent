@@ -15,6 +15,10 @@ import { bytesToBase64, LANDING_HTML, newCreatorToken, sha256Hex, sessionCookie 
 import { checkLiveGuestPageLimit } from './live-doc-limits';
 import { handleMcp } from './mcp';
 import { assertUrlIngestAllowed } from './source-policy';
+import {
+  bearerMatches, boundedRequest, hashAuditOwnerToken, newAuditOwnerToken,
+  MAX_AUDIT_PDF_BYTES, MAX_AUDIT_REQUEST_BYTES, MAX_CONTROL_REQUEST_BYTES,
+} from './audit-security';
 
 // ValidatorAgent + ColorContrastAgent (lightweight brains) + their Workflows (durable heavy
 // offload) are exported so wrangler registers the DO classes + the Workflows. SpecialistWorkflow
@@ -32,11 +36,11 @@ type V2Env = Env;
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,OPTIONS',
-  'access-control-allow-headers': 'authorization,content-type,x-wcag-authenticated-user,x-wcag-live-claim-secret',
+  'access-control-allow-headers': 'authorization,content-type,x-wcag-authenticated-user,x-wcag-live-claim-secret,x-wcag-decision-token',
 };
 const json = (o: unknown, status = 200) =>
   new Response(JSON.stringify(o, null, 2), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...CORS } });
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = MAX_AUDIT_PDF_BYTES;
 
 function summarize(id: string, rec: AuditRecord) {
   return {
@@ -166,7 +170,28 @@ export default {
       return Response.redirect(`https://app.example.com${path}`, 302);
     }
 
-    if (path === '/mcp') return handleMcp(req, env);
+    // The public /s and MCP twin-rendering product has separate guest limits. Audit records,
+    // attestations, lab workflows, and Agent SDK state require a server-side credential.
+    const privateApi = path === '/audit' || path === '/decide' || path === '/status'
+      || path.startsWith('/v2/') || path.startsWith('/agents/');
+    if (privateApi) {
+      if (!env.AUDIT_API_TOKEN) return json({ error: 'audit_api_not_configured' }, 503);
+      if (!(await bearerMatches(req, env.AUDIT_API_TOKEN))) return json({ error: 'unauthorized' }, 401);
+      if (req.method === 'POST' && !path.startsWith('/agents/')) {
+        const max = path === '/audit' || path === '/v2/remediate-upload-wf'
+          ? MAX_AUDIT_REQUEST_BYTES : MAX_CONTROL_REQUEST_BYTES;
+        try { req = await boundedRequest(req, max); }
+        catch { return json({ error: 'request_too_large' }, 413); }
+      }
+    }
+
+    if (path === '/mcp') {
+      if (req.method === 'POST') {
+        try { req = await boundedRequest(req, MAX_CONTROL_REQUEST_BYTES); }
+        catch { return json({ error: 'request_too_large' }, 413); }
+      }
+      return handleMcp(req, env);
+    }
     if (path === '/app') return new Response(UI_HTML.replaceAll('__WORKER_ORIGIN__', url.origin), { headers: { 'content-type': 'text/html; charset=utf-8', ...CORS } });
 
     // ── Live streamed accessible document surface (/s scheme) ───────────────────────────────
@@ -185,6 +210,10 @@ export default {
     // GET /s/:id/fig/:n.png → R2-served cropped figure image.
     // GET /s/demo          → clickable synthetic demo (no PDF). MUST precede the /s/:id matcher below.
     if (path === '/s/demo' && req.method === 'GET') {
+      const rl = (env as unknown as { SESSIONS_RATELIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> } }).SESSIONS_RATELIMIT;
+      if (!rl) return json({ error: 'session_rate_limit_not_configured' }, 503);
+      const { success } = await rl.limit({ key: req.headers.get('cf-connecting-ip') || 'anon' });
+      if (!success) return json({ error: 'Too many requests — please wait a moment.' }, 429);
       const sessionId = crypto.randomUUID();
       // The demo mints a fresh UUID per hit and has no creator cookie, so it must be PUBLIC (a static
       // allowlist can't cover a per-hit id) — else it would self-403 under the private-by-default gate.
@@ -200,18 +229,17 @@ export default {
     if (path === '/s' && req.method === 'POST') {
       // Abuse bound: unauthenticated create triggers Gemini + container compute. Per-IP rate limit.
       const rl = (env as unknown as { SESSIONS_RATELIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> } }).SESSIONS_RATELIMIT;
-      if (rl) {
-        const ip = req.headers.get('cf-connecting-ip') || 'anon';
-        const { success } = await rl.limit({ key: ip });
-        if (!success) return json({ error: 'Too many requests — please wait a moment.' }, 429);
-      }
+      if (!rl) return json({ error: 'session_rate_limit_not_configured' }, 503);
+      const ip = req.headers.get('cf-connecting-ip') || 'anon';
+      const { success } = await rl.limit({ key: ip });
+      if (!success) return json({ error: 'Too many requests — please wait a moment.' }, 429);
       const LIVE_MAX_BYTES = 20 * 1024 * 1024;
-      // Reject an oversized request BEFORE buffering the body (formData/json). +1MB slack for the
-      // multipart envelope. Mirrors the URL-fetch streamed cap so neither path buffers unbounded input.
-      if (Number(req.headers.get('content-length') || '0') > LIVE_MAX_BYTES + 1024 * 1024) {
-        return json({ error: `request too large (max ${LIVE_MAX_BYTES} bytes)` }, 413);
-      }
       const contentType = req.headers.get('content-type') || '';
+      // Stream-cap the body even when Content-Length is absent or forged, before formData/json parsing.
+      try {
+        req = await boundedRequest(req, contentType.includes('multipart/form-data')
+          ? LIVE_MAX_BYTES + 1024 * 1024 : MAX_CONTROL_REQUEST_BYTES);
+      } catch { return json({ error: `request too large (max ${LIVE_MAX_BYTES} bytes)` }, 413); }
       let source: { kind: 'bytes'; bytes: string } | { kind: 'url'; url: string };
       let title: string;
       if (contentType.includes('multipart/form-data')) {
@@ -294,11 +322,12 @@ export default {
         service: 'wcag-audit-agent',
         ok: true,
         what: 'Per-document accessibility audit agent (deterministic byte-level audit + human-gate). One Durable Object per document.',
+        private_api: 'Bearer token required for /audit, /decide, /status, /v2/*, and /agents/*; /decide also requires the audit owner capability.',
         endpoints: {
-          'POST /audit': '{ pdf_url, id? } → run audit, returns gate/tier/findings',
-          'POST /decide': '{ id, decision: approve|reject, note? } → resolve the human gate',
+          'POST /audit': '{ pdf_url, id? } → run audit, returns gate/tier/findings and one-time owner_token',
+          'POST /decide': '{ id, decision: approve|reject, note? } + x-wcag-decision-token → resolve the human gate',
           'GET /status?id=': 'current gate/tier/findings for a document',
-          'POST /mcp': 'MCP server (JSON-RPC): tools audit_document/decide/get_status + ui:// findings app',
+          'POST /mcp': 'MCP server (JSON-RPC): public view_html tool with guest rate limit',
           'GET /app?id=': 'findings reviewer UI (also the MCP App resource)',
           'GET /v2/ping-facet?id=': 'facets pre-flight: prove ctx.facets/ctx.exports enabled (subAgent round-trip)',
           'POST /v2/remediate': '{ pdf_url, image_url?, page_point_width?, fixed_pdf_url?, id? } → run the FULL PDF-remediation pipeline (Audit→Remediate→Compare→gate) in-process; returns the completed pipeline report. image_url+page_point_width enable real WCAG 1.4.3 contrast; fixed_pdf_url (a pre-built tagged V2) enables a real Compare before→after delta',
@@ -320,18 +349,24 @@ export default {
       const pdfUrl: string | undefined = body.pdf_url ?? url.searchParams.get('pdf_url') ?? undefined;
       const pdfBase64: string | undefined = body.pdf_base64 ?? body.pdfBase64 ?? undefined;
       if (!pdfUrl && !pdfBase64) return json({ error: 'pdf_url or pdf_base64 required' }, 400);
+      if (pdfBase64 && (typeof pdfBase64 !== 'string' || pdfBase64.length > Math.ceil(MAX_AUDIT_PDF_BYTES * 4 / 3) + 64)) {
+        return json({ error: 'pdf_too_large' }, 413);
+      }
       if (pdfUrl) {
-        // SSRF guard: refuse non-http(s) / loopback / link-local / metadata targets before fetching.
-        // (This validates the initial URL only — see the redirect-hop caveat in the README's Security section.)
+        // The fetcher rechecks every redirect hop and caps time and response bytes.
         const gate = assertUrlIngestAllowed(pdfUrl);
         if (!gate.ok) return json({ error: `Cannot fetch this URL: ${gate.reason}` }, 400);
       }
       const id: string = body.id ?? pdfUrl ?? body.file_name ?? crypto.randomUUID();
       try {
+        const ownerToken = newAuditOwnerToken();
+        const ownerTokenHash = await hashAuditOwnerToken(ownerToken);
+        const uploadedBytes = pdfBase64 ? base64ToBytes(pdfBase64) : undefined;
+        if (uploadedBytes && uploadedBytes.byteLength > MAX_AUDIT_PDF_BYTES) return json({ error: 'pdf_too_large' }, 413);
         const rec = pdfBase64
-          ? await stub(env, id).auditBytes(body.file_name || id, base64ToBytes(pdfBase64))
-          : await stub(env, id).audit(pdfUrl as string);
-        return json(summarize(id, rec));
+          ? await stub(env, id).auditBytes(body.file_name || id, uploadedBytes as Uint8Array, ownerTokenHash)
+          : await stub(env, id).audit(pdfUrl as string, ownerTokenHash);
+        return json({ ...summarize(id, rec), owner_token: ownerToken });
       } catch (e) {
         return json({ error: String(e) }, 500);
       }
@@ -341,11 +376,14 @@ export default {
       const body = (await req.json().catch(() => ({}))) as any;
       const id: string | undefined = body.id;
       if (!id) return json({ error: 'id required' }, 400);
+      const ownerToken = req.headers.get('x-wcag-decision-token');
+      if (!ownerToken || !/^[0-9a-f]{64}$/.test(ownerToken)) return json({ error: 'decision_token_required' }, 403);
       const decision = body.decision === 'reject' ? 'reject' : 'approve';
       try {
-        const rec = await stub(env, id).decide(decision, body.note);
+        const rec = await stub(env, id).decide(decision, body.note, await hashAuditOwnerToken(ownerToken));
         return json(summarize(id, rec));
       } catch (e) {
+        if (String(e).includes('not_authorized')) return json({ error: 'not_authorized' }, 403);
         return json({ error: String(e) }, 500);
       }
     }
@@ -358,9 +396,8 @@ export default {
     }
 
     // ── ValidatorAgent surface (additive; native cloudflare/agents) ──
-    // LAB-ONLY (workers.dev spike): these routes are unauthenticated + open-CORS like /audit, and
-    // /v2/decide releases the human gate from a caller-supplied workflow_id (forgeable). MUST be
-    // Clerk/API-key/service-binding gated before this is used for real attestations.
+    // Lab workflows share the private API token gate above. A product rollout should still bind
+    // decisions to an authenticated user or service identity before issuing real attestations.
     if (path === '/v2/validate' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as any;
       const pdfUrl: string | undefined = body.pdf_url;
@@ -392,8 +429,7 @@ export default {
 
     // ── A11yAgent COORDINATOR surface (two-layer facet topology) ──
     // The coordinator (per-document A11yAgent) dispatches the ValidatorAgent facet via
-    // this.subAgent() and owns the a11y report ledger. LAB-ONLY/unauthenticated like /v2/*
-    // — gate behind Clerk/API-key/service-binding before real attestations.
+    // this.subAgent() and owns the a11y report ledger. The private API gate applies to /v2/*.
 
     // Facets pre-flight smoke: proves ctx.facets/ctx.exports are enabled on this runtime.
     if (path === '/v2/ping-facet') {
@@ -407,7 +443,7 @@ export default {
 
     // ── the PDF-remediation DOMAIN PIPELINE (Audit→Remediate→Compare→gate) ──
     // POST /v2/remediate runs the full pipeline in-process and returns the completed pipeline report.
-    // LAB-ONLY/unauthenticated like the other /v2/* routes — gate before real attestations.
+    // The private API gate applies here; product identity/authorization is still needed for attestations.
     if (path === '/v2/remediate' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as any;
       const pdfUrl: string | undefined = body.pdf_url;
@@ -494,7 +530,7 @@ export default {
 
     // Conversational surface: ask the A11yAgent about this document's audit. The agent appends the user turn,
     // sets `thinking`, composes a grounded Gemini reply, and appends it — every step a setState broadcast, so
-    // the live UI (WebSocket subscribe + poll fallback) shows message → thinking → reply. LAB-ONLY/unauth.
+    // the live UI (WebSocket subscribe + poll fallback) shows message → thinking → reply. Private API gated.
     if (path === '/v2/chat' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as { id?: string; text?: string };
       const id = String(body.id ?? '').trim();
@@ -519,8 +555,7 @@ export default {
     }
 
     // ── ColorContrastAgent direct surface (durable workflow, WCAG 1.4.3) ──
-    // Backs the standalone contrast lane (the coordinator uses the inline RPC instead). LAB-ONLY/
-    // unauthenticated like the other /v2/* routes — gate before real attestations.
+    // Backs the standalone contrast lane (the coordinator uses the inline RPC instead). Private API gated.
     if (path === '/v2/contrast' && req.method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as any;
       const imageUrl: string | undefined = body.image_url ?? body.pdf_url;

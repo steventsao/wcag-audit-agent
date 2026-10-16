@@ -40,7 +40,7 @@ import {
 } from './live-doc-core';
 import { streamGeminiHtml } from './gemini-parse';
 import { checkLiveGuestPageLimit } from './live-doc-limits';
-import { assertUrlIngestAllowed } from './source-policy';
+import { assertUrlIngestAllowed, fetchAllowedPdf } from './source-policy';
 
 interface LiveEnv {
   GEMINI_API_KEY: string;
@@ -95,33 +95,6 @@ const DOWNLOAD_INLINE_CAP = 8 * 1024 * 1024; // cap total figure-crop bytes inli
 // immediately for the cookie); the cookie/stream token covers the full stream + EventSource reconnects.
 const FRAME_TOKEN_TTL_MS = 2 * 60 * 1000;
 const FRAME_COOKIE_TTL_MS = 60 * 60 * 1000;
-
-/** Read a response body with a hard byte cap, aborting the stream once exceeded. Returns null if too big.
- *  Streaming (not buffer-then-check) so a chunked / no-Content-Length body can't force unbounded work. */
-async function readCapped(resp: Response, max: number): Promise<Uint8Array | null> {
-  const reader = resp.body?.getReader();
-  if (!reader) return null;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > max) {
-      await reader.cancel().catch(() => {});
-      return null;
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.byteLength;
-  }
-  return out;
-}
 
 const SSE_HEADERS: Record<string, string> = {
   'content-type': 'text/event-stream; charset=utf-8',
@@ -352,24 +325,17 @@ export class LiveDocAgent extends DurableObject<LiveEnv> {
           await this.appendEvent({ type: 'error', message: gate.reason });
           return this.finish('error');
         }
-        const resp = await fetch(source.url, { headers: { 'user-agent': 'wcag-audit-agent/1.0 (+app.example.com)', accept: 'application/pdf,*/*' } });
-        if (!resp.ok) {
-          await this.appendEvent({ type: 'error', message: `Couldn't fetch the PDF (HTTP ${resp.status}).` });
+        let capped: Uint8Array;
+        try {
+          capped = await fetchAllowedPdf(source.url, fetch, LIVE_MAX_BYTES);
+        } catch (error) {
+          const message = String(error).includes('pdf_too_large')
+            ? `PDF too large (max ${LIVE_MAX_BYTES} bytes).`
+            : 'Could not fetch this public PDF safely.';
+          await this.appendEvent({ type: 'error', message });
           return this.finish('error');
         }
-        const ct = resp.headers.get('content-type') || '';
-        // Reject early on a declared oversize, then stream with a hard cap so a chunked / missing
-        // Content-Length body can't force unbounded network+memory before rejection.
-        if (Number(resp.headers.get('content-length') || '0') > LIVE_MAX_BYTES) {
-          await this.appendEvent({ type: 'error', message: `PDF too large (max ${LIVE_MAX_BYTES} bytes).` });
-          return this.finish('error');
-        }
-        const capped = await readCapped(resp, LIVE_MAX_BYTES);
-        if (!capped) {
-          await this.appendEvent({ type: 'error', message: `PDF too large (max ${LIVE_MAX_BYTES} bytes).` });
-          return this.finish('error');
-        }
-        if (!/pdf/i.test(ct) && capped.subarray(0, 5).join(',') !== '37,80,68,70,45') {
+        if (capped.subarray(0, 5).join(',') !== '37,80,68,70,45') {
           await this.appendEvent({ type: 'error', message: 'That URL did not return a PDF.' });
           return this.finish('error');
         }
